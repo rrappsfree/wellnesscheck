@@ -1,3 +1,6 @@
-pip install flask flask-cors scikit-learn pandas numpy rapidfuzz 
-
-#incase of using AI , google AI , anthropic or openIO package needs to be loaded.
+flask 
+flask-cors 
+scikit-learn 
+pandas 
+numpy 
+rapidfuzz 
