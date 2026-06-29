@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Article — HealthPredict</title>
+<link rel="stylesheet" href="/static/shared.css">
+<style>
+/* Article page layout */
+.article-layout {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: 40px;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 48px 24px 80px;
+}
+@media (max-width: 780px) {
+  .article-layout { grid-template-columns: 1fr; }
+  .sidebar { order: -1; }
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 24px;
+}
+.breadcrumb a { color: var(--muted); text-decoration: none; }
+.breadcrumb a:hover { color: var(--text); }
+.breadcrumb span { margin: 0 6px; }
+
+/* Article header */
+.art-header { margin-bottom: 36px; }
+.art-header .meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.art-header h1 {
+  font-family: var(--serif);
+  font-size: clamp(24px, 4vw, 38px);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -.01em;
+  margin-bottom: 16px;
+}
+.art-header .summary {
+  font-size: 17px;
+  color: var(--muted);
+  line-height: 1.6;
+  border-left: 3px solid var(--accent);
+  padding-left: 16px;
+}
+
+/* Emoji banner */
+.emoji-banner {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 80px;
+  margin-bottom: 36px;
+}
+
+/* Article body typography */
+.art-body {
+  font-size: 16px;
+  line-height: 1.8;
+  color: #c9d1d9;
+}
+.art-body h2 {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 40px 0 14px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.art-body h3 {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 28px 0 10px;
+}
+.art-body p { margin-bottom: 16px; }
+.art-body ul, .art-body ol {
+  margin: 0 0 16px 24px;
+}
+.art-body li { margin-bottom: 6px; }
+.art-body strong { color: var(--text); font-weight: 600; }
+.art-body em { color: var(--muted); font-style: italic; }
+
+/* Disclaimer box */
+.disclaimer-box {
+  background: #d299221a;
+  border: 1px solid #d299224d;
+  border-radius: var(--r);
+  padding: 16px 20px;
+  margin: 36px 0 0;
+  font-size: 13px;
+  color: var(--warn);
+  line-height: 1.5;
+}
+.disclaimer-box strong { color: var(--warn); }
+
+/* Try checker CTA */
+.checker-cta {
+  background: linear-gradient(135deg, #1a2a1a, #0d1117);
+  border: 1px solid #3fb9504d;
+  border-radius: var(--r);
+  padding: 24px;
+  margin: 36px 0;
+  text-align: center;
+}
+.checker-cta h3 { color: var(--accent); font-size: 16px; margin-bottom: 8px; }
+.checker-cta p  { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+.cta-btn {
+  display: inline-block;
+  background: var(--accent);
+  color: #0d1117;
+  font-weight: 600;
+  font-size: 14px;
+  padding: 10px 24px;
+  border-radius: 7px;
+  text-decoration: none;
+  transition: opacity .15s;
+}
+.cta-btn:hover { opacity: .88; }
+
+/* ── Sidebar ─────────────────────────────────────────── */
+.sidebar { display: flex; flex-direction: column; gap: 20px; }
+
+.sidebar-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 20px;
+}
+.sidebar-card h4 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+
+/* Related articles */
+.related-list { display: flex; flex-direction: column; gap: 12px; }
+.related-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  text-decoration: none;
+  transition: opacity .15s;
+}
+.related-item:hover { opacity: .8; }
+.related-emoji {
+  font-size: 24px;
+  background: var(--surface2);
+  border-radius: 6px;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.related-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.4;
+}
+.related-meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+/* TOC */
+.toc-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.toc-list a {
+  font-size: 13px;
+  color: var(--muted);
+  text-decoration: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  transition: color .15s;
+}
+.toc-list a::before {
+  content: '';
+  display: block;
+  width: 4px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 7px;
+}
+.toc-list a:hover { color: var(--text); }
+
+/* Share */
+.share-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.share-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.share-btn:hover { color: var(--text); border-color: var(--accent); }
+
+/* Loading state */
+.loading { text-align: center; padding: 80px 24px; color: var(--muted); }
+.loading-spinner {
+  width: 32px; height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+  margin: 0 auto 16px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-inner">
+    <a class="nav-logo" href="/"><span class="dot">◆</span> HealthPredict</a>
+    <ul class="nav-links">
+      <li><a href="/">🔬 Symptom Checker</a></li>
+      <li><a href="/blog" class="active">📰 Health Blog</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="article-layout" id="layout">
+  <!-- Loading state -->
+  <div class="loading" style="grid-column:1/-1">
+    <div class="loading-spinner"></div>
+    Loading article…
+  </div>
+</div>
+
+<footer>
+  <strong>⚠ Educational use only.</strong>
+  Content is for informational purposes and does not constitute medical advice.<br>
+  <a href="/">Symptom Checker</a> · <a href="/blog">Health Blog</a>
+</footer>
+
+<script>
+const slug = location.pathname.split('/').pop();
+
+async function loadArticle() {
+  try {
+    const [artRes, allRes] = await Promise.all([
+      fetch(`/api/articles/${slug}`),
+      fetch('/api/articles'),
+    ]);
+    const article  = await artRes.json();
+    const allArts  = await allRes.json();
+
+    if (article.error) {
+      document.getElementById('layout').innerHTML =
+        '<div class="loading" style="grid-column:1/-1">Article not found. <a href="/blog">Back to blog</a></div>';
+      return;
+    }
+
+    document.title = `${article.title} — HealthPredict`;
+    renderArticle(article, allArts);
+  } catch {
+    document.getElementById('layout').innerHTML =
+      '<div class="loading" style="grid-column:1/-1">Could not load article. Is app.py running?</div>';
+  }
+}
+
+function formatDate(d) {
+  return new Date(d).toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
+}
+
+function renderArticle(a, all) {
+  // Extract headings for table of contents
+  const headings = [...a.content.matchAll(/<h2>([^<]+)<\/h2>/g)]
+    .map(m => m[1]);
+
+  // Related articles (same category, excluding current)
+  const related = all
+    .filter(x => x.slug !== a.slug && x.category === a.category)
+    .slice(0, 3);
+  const others  = all
+    .filter(x => x.slug !== a.slug && x.category !== a.category)
+    .slice(0, Math.max(0, 3 - related.length));
+  const relatedList = [...related, ...others].slice(0, 3);
+
+  document.getElementById('layout').innerHTML = `
+    <!-- Main article -->
+    <main>
+      <div class="breadcrumb">
+        <a href="/blog">Health Blog</a>
+        <span>›</span>
+        <span>${a.category}</span>
+        <span>›</span>
+        <span>${a.title}</span>
+      </div>
+
+      <div class="art-header">
+        <div class="meta">
+          <span class="badge ${a.category.toLowerCase()}">${a.category}</span>
+          <span>${formatDate(a.date)}</span>
+          <span>·</span>
+          <span>${a.read_time} read</span>
+          <span>·</span>
+          <span>By ${a.author}</span>
+        </div>
+        <h1>${a.title}</h1>
+        <p class="summary">${a.summary}</p>
+      </div>
+
+      <div class="emoji-banner">${a.image_emoji}</div>
+
+      <div class="art-body">${a.content}</div>
+
+      <!-- Try the checker CTA -->
+      <div class="checker-cta">
+        <h3>🔬 Check Your Symptoms</h3>
+        <p>Use our AI-powered symptom checker trained on two medical datasets to explore possible conditions.</p>
+        <a class="cta-btn" href="/">Try Symptom Checker →</a>
+      </div>
+
+      <div class="disclaimer-box">
+        <strong>⚠ Medical Disclaimer:</strong> This article is for informational purposes only
+        and does not constitute medical advice, diagnosis, or treatment. Always consult a
+        qualified healthcare professional before making any health decisions.
+      </div>
+    </main>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+
+      ${headings.length ? `
+      <div class="sidebar-card">
+        <h4>In this article</h4>
+        <ul class="toc-list">
+          ${headings.map(h => `<li><a href="#" onclick="scrollToHeading('${h}');return false">${h}</a></li>`).join('')}
+        </ul>
+      </div>` : ''}
+
+      <div class="sidebar-card">
+        <h4>Share this article</h4>
+        <div class="share-btns">
+          <button class="share-btn" onclick="copyLink()">🔗 Copy link</button>
+          <button class="share-btn" onclick="shareTwitter()">𝕏 Share</button>
+          <button class="share-btn" onclick="shareWhatsApp()">💬 WhatsApp</button>
+        </div>
+        <p id="copy-msg" style="font-size:12px;color:var(--accent);margin-top:8px;display:none">✓ Link copied!</p>
+      </div>
+
+      ${relatedList.length ? `
+      <div class="sidebar-card">
+        <h4>Related articles</h4>
+        <div class="related-list">
+          ${relatedList.map(r => `
+            <a class="related-item" href="/blog/${r.slug}">
+              <div class="related-emoji">${r.image_emoji}</div>
+              <div>
+                <div class="related-title">${r.title}</div>
+                <div class="related-meta">${r.read_time} read · ${r.category}</div>
+              </div>
+            </a>`).join('')}
+        </div>
+      </div>` : ''}
+
+      <div class="sidebar-card">
+        <h4>Quick symptom check</h4>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
+          Experiencing symptoms mentioned in this article?
+        </p>
+        <a class="cta-btn" href="/" style="display:inline-block;font-size:13px;padding:8px 16px">
+          Open Checker →
+        </a>
+      </div>
+
+    </aside>`;
+}
+
+function scrollToHeading(text) {
+  const els = document.querySelectorAll('.art-body h2');
+  for (const el of els) {
+    if (el.textContent.trim() === text) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      break;
+    }
+  }
+}
+
+function copyLink() {
+  navigator.clipboard.writeText(location.href).then(() => {
+    const msg = document.getElementById('copy-msg');
+    msg.style.display = 'block';
+    setTimeout(() => msg.style.display = 'none', 2000);
+  });
+}
+
+function shareTwitter() {
+  const url  = encodeURIComponent(location.href);
+  const text = encodeURIComponent(document.title);
+  window.open(`https://twitter.com/intent/tweet?url=${url}&text=${text}`, '_blank');
+}
+
+function shareWhatsApp() {
+  const url = encodeURIComponent(location.href);
+  window.open(`https://wa.me/?text=${url}`, '_blank');
+}
+
+loadArticle();
+</script>
+</body>
+</html>

@@ -1,0 +1,920 @@
+"""
+app.py — Unified Flask API: Kaggle + DDXPlus Disease Predictor
+==============================================================
+ALL interactions are handled via JSON API — no input() calls,
+no CLI prompts, no blocking. The frontend drives everything.
+
+Ambiguous symptom matching
+--------------------------
+When a symptom phrase matches multiple candidates within 5 points,
+the API returns them in an "ambiguous" list. The frontend shows a
+dialog and POSTs the resolved choice back to /api/resolve before
+running the final prediction.
+
+Endpoints
+---------
+  GET  /                          → index.html
+  GET  /api/status                → loaded datasets + stats
+  GET  /api/symptoms?dataset=X    → full symptom list
+  POST /api/predict               → main prediction endpoint
+  POST /api/resolve               → submit resolved ambiguous symptoms
+  POST /api/feedback              → save user correction
+  GET  /api/unknown-symptoms      → unmatched symptom log
+  GET  /api/feedback-summary      → feedback stats
+"""
+
+import os, sys, json, datetime
+import numpy as np
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+from rapidfuzz import process as fz_process, fuzz
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+UNKNOWN_FILE  = "unknown_symptoms.json"
+FEEDBACK_FILE = "feedback_log.json"
+FUZZY_THRESHOLD = 70
+FUZZY_TOP_N     = 3
+
+def _load_json(path, default):
+    if os.path.exists(path):
+        try:
+            return json.load(open(path, encoding="utf-8"))
+        except Exception:
+            pass
+    return default
+
+def _save_json(path, data):
+    json.dump(data, open(path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+
+def _log_unknowns(phrases):
+    if not phrases: return
+    store = _load_json(UNKNOWN_FILE, {})
+    today = datetime.date.today().isoformat()
+    for p in phrases:
+        key = p.lower().strip()
+        store[key] = store.get(key, {"count": 0,
+                                      "first_seen": today,
+                                      "last_seen": today})
+        store[key]["count"]    += 1
+        store[key]["last_seen"] = today
+    _save_json(UNKNOWN_FILE, store)
+
+# ═══════════════════════════════════════════════════════════
+# DATASET A — KAGGLE
+# ═══════════════════════════════════════════════════════════
+print("\n" + "="*60)
+print("  Loading Dataset A: Kaggle (kaushil268)")
+print("="*60)
+
+from disease_predictor_kaggle_AI import (
+    download_datasets, load_data,
+    train_models        as kaggle_train_models,
+    symptoms_to_vector  as kaggle_sym_vec,
+    top_predictions     as kaggle_top_preds,
+    display_name        as kaggle_display,
+    extract_symptoms_via_llm, NLP_BACKEND,
+)
+
+download_datasets()
+_, _ytr, _, _, KAGGLE_COLS, KAGGLE_LE = load_data()
+# retrain on full set
+from disease_predictor_kaggle_AI import load_data as _kload
+_Xtr,_ytr,_Xte,_yte,KAGGLE_COLS,KAGGLE_LE = _kload()
+KAGGLE_MODELS = kaggle_train_models(_Xtr, _ytr)
+
+KAGGLE_DISPLAY_TO_COL = {kaggle_display(c): c for c in KAGGLE_COLS}
+KAGGLE_DISPLAY_NAMES  = list(KAGGLE_DISPLAY_TO_COL.keys())
+print(f"  ✔  Kaggle ready — {len(KAGGLE_COLS)} symptoms | {len(KAGGLE_LE.classes_)} diseases\n")
+
+# ═══════════════════════════════════════════════════════════
+# DATASET B — DDXPlus
+# ═══════════════════════════════════════════════════════════
+print("="*60)
+print("  Loading Dataset B: DDXPlus (NeurIPS 2022)")
+print("="*60)
+
+DDX_AVAILABLE        = False
+DDX_META             = {}
+DDX_MODELS           = {}
+DDX_EVIDENCES        = {}
+DDX_ALL_CODES        = []
+DDX_CODE_INDEX       = {}
+DDX_LE               = None
+DDX_READABLE_TO_CODE = {}
+DDX_READABLE_PHRASES = []
+
+try:
+    from disease_predictor_ddxplus import (
+        locate_files, load_metadata, build_feature_schema,
+        load_patients, train_models as ddx_train_models,
+        top_predictions as ddx_top_preds,
+        build_symptom_lookup, MAX_TRAIN_ROWS,
+    )
+    from sklearn.preprocessing import LabelEncoder as _LE
+
+    _files             = locate_files()
+    _evs, _conds       = load_metadata(_files)
+    _codes, _cidx      = build_feature_schema(_evs)
+    _ddx_le            = _LE()
+    _ddx_le.fit(list(_conds.keys()))
+
+    _Xtr_d,_ytr_d = load_patients(_files["train"],_codes,_cidx,_ddx_le,MAX_TRAIN_ROWS)
+    _Xte_d,_yte_d = load_patients(_files["test"], _codes,_cidx,_ddx_le)
+
+    DDX_MODELS           = ddx_train_models(_Xtr_d, _ytr_d)
+    DDX_EVIDENCES        = _evs
+    DDX_ALL_CODES        = _codes
+    DDX_CODE_INDEX       = _cidx
+    DDX_LE               = _ddx_le
+    DDX_READABLE_TO_CODE, DDX_READABLE_PHRASES = build_symptom_lookup(_evs)
+    DDX_META = {
+        "evidences":  len(_evs),
+        "diseases":   len(_conds),
+        "train_rows": int(_Xtr_d.shape[0]),
+        "features":   int(_Xtr_d.shape[1]),
+    }
+    DDX_AVAILABLE = True
+    print(f"  ✔  DDXPlus ready — {len(_evs)} evidences | {len(_conds)} diseases\n")
+
+except SystemExit:
+    print("  ⚠  DDXPlus files not found.")
+    print("     Download: https://figshare.com/articles/dataset/DDXPlus_Dataset_English_/22687585\n")
+except Exception as e:
+    print(f"  ⚠  DDXPlus load error: {e}\n")
+
+
+# ═══════════════════════════════════════════════════════════
+# NON-INTERACTIVE FUZZY RESOLVERS
+# These never call input() — ambiguous matches are returned
+# to the frontend for the user to resolve via UI.
+# ═══════════════════════════════════════════════════════════
+
+def _fuzzy_match_web(phrase, display_names, display_to_col):
+    """
+    Match one phrase against known symptom names.
+    Returns:
+      ("match",   col_name,          None)           — unambiguous match
+      ("ambiguous", best_col,   candidates_list)     — multiple close matches
+      ("unknown", None,          None)               — no match above threshold
+    """
+    hits = fz_process.extract(phrase, display_names,
+                               scorer=fuzz.WRatio, limit=FUZZY_TOP_N)
+    if not hits:
+        return "unknown", None, None
+
+    best_str, best_score, _ = hits[0]
+    if best_score < FUZZY_THRESHOLD:
+        return "unknown", None, None
+
+    close = [(h[0], round(h[1], 1)) for h in hits if h[1] >= hits[0][1] - 5]
+    if len(close) > 1:
+        # Return all candidates for the frontend to show a picker
+        candidates = [{"label": label, "col": display_to_col[label], "score": sc}
+                      for label, sc in close]
+        return "ambiguous", display_to_col[best_str], candidates
+
+    return "match", display_to_col[best_str], None
+
+
+def resolve_kaggle_symptoms(phrases, track_unknowns=False):
+    """
+    Resolve a list of phrases against Kaggle symptom columns.
+    Returns: { matched, ambiguous, unknowns }
+      matched   : list of resolved column names
+      ambiguous : [{ phrase, candidates:[{label,col,score}] }]
+      unknowns  : phrases with no match
+    """
+    matched, ambiguous, unknowns = [], [], []
+
+    for phrase in phrases:
+        phrase_lower = phrase.lower().strip()
+
+        # Exact match on internal col name
+        norm = phrase_lower.replace(" ", "_")
+        if norm in KAGGLE_COLS:
+            matched.append(norm)
+            continue
+
+        # Exact match on display name
+        if phrase_lower in KAGGLE_DISPLAY_TO_COL:
+            matched.append(KAGGLE_DISPLAY_TO_COL[phrase_lower])
+            continue
+
+        status, col, candidates = _fuzzy_match_web(
+            phrase_lower, KAGGLE_DISPLAY_NAMES, KAGGLE_DISPLAY_TO_COL
+        )
+        if status == "match":
+            matched.append(col)
+        elif status == "ambiguous":
+            ambiguous.append({"phrase": phrase, "candidates": candidates})
+        else:
+            if track_unknowns:
+                unknowns.append(phrase)
+
+    return {
+        "matched":   list(dict.fromkeys(matched)),
+        "ambiguous": ambiguous,
+        "unknowns":  unknowns,
+    }
+
+
+def resolve_ddxplus_symptoms(phrases):
+    """
+    Resolve a list of phrases against DDXPlus evidence readable labels.
+    Returns: { matched_codes, matched_labels, ambiguous, unknowns }
+    """
+    matched_codes, matched_labels, ambiguous, unknowns = [], [], [], []
+
+    for phrase in phrases:
+        phrase_lower = phrase.lower().strip()
+
+        # Exact match
+        if phrase_lower in DDX_READABLE_TO_CODE:
+            code = DDX_READABLE_TO_CODE[phrase_lower]
+            matched_codes.append(code)
+            matched_labels.append(DDX_EVIDENCES[code]["readable"])
+            continue
+
+        status, col, candidates = _fuzzy_match_web(
+            phrase_lower, DDX_READABLE_PHRASES, DDX_READABLE_TO_CODE
+        )
+        if status == "match":
+            matched_codes.append(col)
+            matched_labels.append(DDX_EVIDENCES[col]["readable"])
+        elif status == "ambiguous":
+            # candidates col = evidence code here
+            ambiguous.append({"phrase": phrase, "candidates": candidates})
+        else:
+            unknowns.append(phrase)
+
+    return {
+        "matched_codes":  list(dict.fromkeys(matched_codes)),
+        "matched_labels": list(dict.fromkeys(matched_labels)),
+        "ambiguous":      ambiguous,
+        "unknowns":       unknowns,
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# FLASK APP
+# ═══════════════════════════════════════════════════════════
+import os as _os
+app = Flask(__name__, template_folder=".",
+           static_folder=_os.path.dirname(_os.path.abspath(__file__)),
+           static_url_path='/static')
+CORS(app)
+
+def _err(msg, code=400):
+    return jsonify({"error": msg}), code
+
+
+@app.route("/")
+def index():
+    return send_from_directory(".", "index.html")
+
+
+@app.route("/api/status")
+def status():
+    return jsonify({
+        "kaggle": {
+            "available":    True,
+            "symptoms":     len(KAGGLE_COLS),
+            "diseases":     len(KAGGLE_LE.classes_),
+            "disease_list": list(KAGGLE_LE.classes_),
+        },
+        "ddxplus": {
+            "available": DDX_AVAILABLE,
+            **DDX_META,
+            **({"disease_list": list(DDX_LE.classes_)} if DDX_AVAILABLE else {}),
+        },
+        "nlp_backend": NLP_BACKEND,
+    })
+
+
+@app.route("/api/symptoms")
+def symptoms():
+    ds = request.args.get("dataset", "kaggle").lower()
+    if ds == "ddxplus":
+        if not DDX_AVAILABLE:
+            return _err("DDXPlus not loaded.", 503)
+        return jsonify({
+            "dataset":  "ddxplus",
+            "symptoms": [{"code": c, "label": info["readable"]}
+                         for c, info in DDX_EVIDENCES.items()],
+            "count": len(DDX_EVIDENCES),
+        })
+    return jsonify({
+        "dataset":  "kaggle",
+        "symptoms": [kaggle_display(c) for c in KAGGLE_COLS],
+        "count":    len(KAGGLE_COLS),
+    })
+
+
+# ─────────────────────────────────────────────────────────
+# POST /api/predict
+# ─────────────────────────────────────────────────────────
+# Response shape:
+#   If all symptoms resolved cleanly:
+#     { status:"ok", predictions, matched_symptoms, negated_symptoms,
+#       all_model_predictions, dataset, [demographics] }
+#
+#   If some symptoms are ambiguous:
+#     { status:"ambiguous",
+#       ambiguous: [{ phrase, candidates:[{label,col,score}] }],
+#       resolved:  [...already matched cols...],
+#       negated:   [...],
+#       partial_text: original text,
+#       dataset, age, sex }
+#     → Frontend shows picker, user picks, POSTs to /api/resolve
+#
+# ─────────────────────────────────────────────────────────
+@app.route("/api/predict", methods=["POST"])
+def predict():
+    body    = request.get_json(silent=True) or {}
+    text    = (body.get("text") or "").strip()
+    dataset = (body.get("dataset") or "kaggle").lower()
+    age     = float(body.get("age") or 40)
+    sex     = (body.get("sex") or "M").upper()
+
+    if not text:
+        return _err("Missing 'text' field.")
+
+    # ── Extract symptoms via LLM (or treat as comma list) ──
+    extraction = extract_symptoms_via_llm(text)
+
+    if extraction:
+        symptom_phrases  = (extraction.get("symptoms",  []) +
+                            extraction.get("uncertain", []))
+        negated_phrases  =  extraction.get("negated",   [])
+    else:
+        # Fallback: comma-separated
+        symptom_phrases  = [t.strip() for t in text.split(",") if t.strip()]
+        negated_phrases  = []
+
+    if dataset == "ddxplus":
+        return _handle_ddxplus(symptom_phrases, negated_phrases, age, sex, body)
+    return _handle_kaggle(symptom_phrases, negated_phrases, body)
+
+
+def _handle_kaggle(symptom_phrases, negated_phrases, body):
+    resolved = resolve_kaggle_symptoms(symptom_phrases, track_unknowns=True)
+
+    if resolved["unknowns"]:
+        _log_unknowns(resolved["unknowns"])
+
+    # If ambiguous symptoms exist, ask the frontend to resolve them
+    if resolved["ambiguous"]:
+        return jsonify({
+            "status":       "ambiguous",
+            "dataset":      "kaggle",
+            "ambiguous":    resolved["ambiguous"],
+            "resolved":     resolved["matched"],    # already confirmed cols
+            "negated":      [kaggle_display(c) for c in
+                             resolve_kaggle_symptoms(negated_phrases)["matched"]],
+            "partial_text": body.get("text", ""),
+        })
+
+    matched = resolved["matched"]
+    if not matched:
+        return jsonify({"status": "ok", "dataset": "kaggle",
+                        "predictions": [],
+                        "message": "No symptoms matched. Try rephrasing."})
+
+    return _run_kaggle_prediction(matched, negated_phrases)
+
+
+def _handle_ddxplus(symptom_phrases, negated_phrases, age, sex, body):
+    if not DDX_AVAILABLE:
+        return _err("DDXPlus not loaded. Download from figshare and restart.", 503)
+
+    resolved = resolve_ddxplus_symptoms(symptom_phrases)
+
+    if resolved["unknowns"]:
+        _log_unknowns(resolved["unknowns"])
+
+    if resolved["ambiguous"]:
+        return jsonify({
+            "status":       "ambiguous",
+            "dataset":      "ddxplus",
+            "ambiguous":    resolved["ambiguous"],
+            "resolved":     resolved["matched_codes"],
+            "negated":      negated_phrases,
+            "partial_text": body.get("text", ""),
+            "age":          age,
+            "sex":          sex,
+        })
+
+    matched_codes  = resolved["matched_codes"]
+    matched_labels = resolved["matched_labels"]
+    if not matched_codes:
+        return jsonify({"status": "ok", "dataset": "ddxplus",
+                        "predictions": [],
+                        "message": "No symptoms matched. Try rephrasing."})
+
+    return _run_ddxplus_prediction(matched_codes, matched_labels,
+                                   negated_phrases, age, sex)
+
+
+# ─────────────────────────────────────────────────────────
+# POST /api/resolve
+# Called after the user picks from the ambiguous-symptom dialog.
+# Body: { dataset, resolved_cols, negated, age, sex }
+#   resolved_cols : all matched cols (already resolved + user's new picks)
+# ─────────────────────────────────────────────────────────
+@app.route("/api/resolve", methods=["POST"])
+def resolve():
+    body    = request.get_json(silent=True) or {}
+    dataset = (body.get("dataset") or "kaggle").lower()
+    cols    = body.get("resolved_cols", [])
+    negated = body.get("negated", [])
+    age     = float(body.get("age") or 40)
+    sex     = (body.get("sex") or "M").upper()
+
+    if not cols:
+        return _err("No resolved symptoms provided.")
+
+    if dataset == "ddxplus":
+        # cols are evidence codes; rebuild labels
+        labels = [DDX_EVIDENCES[c]["readable"]
+                  for c in cols if c in DDX_EVIDENCES]
+        return _run_ddxplus_prediction(cols, labels, negated, age, sex)
+
+    return _run_kaggle_prediction(cols, negated)
+
+
+# ── Prediction runners ─────────────────────────────────────
+
+def _run_kaggle_prediction(matched_cols, negated_phrases):
+    neg_resolved = resolve_kaggle_symptoms(negated_phrases)["matched"]
+
+    vec       = kaggle_sym_vec(matched_cols, KAGGLE_COLS)
+    all_preds = []
+    for mname, model in KAGGLE_MODELS.items():
+        for disease, prob in kaggle_top_preds(model, vec, KAGGLE_LE, top_n=5):
+            all_preds.append({"disease": disease,
+                               "probability": round(float(prob), 4),
+                               "model": mname})
+
+    rf = sorted([p for p in all_preds if p["model"] == "Random Forest"],
+                key=lambda x: -x["probability"])
+
+    return jsonify({
+        "status":               "ok",
+        "dataset":              "kaggle",
+        "matched_symptoms":     [kaggle_display(c) for c in matched_cols],
+        "negated_symptoms":     [kaggle_display(c) for c in neg_resolved],
+        "predictions":           rf,
+        "all_model_predictions": all_preds,
+    })
+
+
+def _run_ddxplus_prediction(matched_codes, matched_labels,
+                             negated_phrases, age, sex):
+    vec_data = [0] * len(DDX_ALL_CODES)
+    for code in matched_codes:
+        if code in DDX_CODE_INDEX:
+            vec_data[DDX_CODE_INDEX[code]] = 1
+
+    vec = np.array([vec_data + [age / 100.0, 1.0 if sex == "M" else 0.0]],
+                   dtype=np.float32)
+
+    all_preds = []
+    for mname, model in DDX_MODELS.items():
+        for disease, prob in ddx_top_preds(model, vec, DDX_LE, top_n=5):
+            all_preds.append({"disease": disease,
+                               "probability": round(float(prob), 4),
+                               "model": mname})
+
+    rf_key = next((k for k in DDX_MODELS if "Random" in k),
+                  list(DDX_MODELS.keys())[0])
+    rf     = sorted([p for p in all_preds if p["model"] == rf_key],
+                    key=lambda x: -x["probability"])
+
+    return jsonify({
+        "status":               "ok",
+        "dataset":              "ddxplus",
+        "matched_symptoms":     matched_labels,
+        "negated_symptoms":     negated_phrases,
+        "predictions":           rf,
+        "all_model_predictions": all_preds,
+        "demographics":          {"age": int(age), "sex": sex},
+    })
+
+
+# ── Other endpoints ────────────────────────────────────────
+
+@app.route("/api/feedback", methods=["POST"])
+def feedback():
+    body     = request.get_json(silent=True) or {}
+    symptoms = body.get("symptoms", [])
+    label    = (body.get("label") or "").strip()
+    correct  = bool(body.get("correct", True))
+    dataset  = (body.get("dataset") or "kaggle").lower()
+    if not symptoms or not label:
+        return _err("'symptoms' and 'label' are required.")
+    record = {"timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+              "dataset": dataset, "symptoms": symptoms,
+              "label": label, "correct": correct}
+    log = _load_json(FEEDBACK_FILE, [])
+    log.append(record)
+    _save_json(FEEDBACK_FILE, log)
+    return jsonify({"saved": True, "total": len(log),
+                    "message": f"Feedback saved ({len(log)} total)."})
+
+
+@app.route("/api/unknown-symptoms")
+def unknown_symptoms():
+    store = _load_json(UNKNOWN_FILE, {})
+    items = sorted(store.items(), key=lambda x: -x[1]["count"])
+    return jsonify({"count": len(items),
+                    "unknown_symptoms": [{"phrase": k, **v} for k, v in items]})
+
+
+@app.route("/api/feedback-summary")
+def feedback_summary():
+    log     = _load_json(FEEDBACK_FILE, [])
+    correct = sum(1 for r in log if r.get("correct"))
+    diseases, by_ds = {}, {}
+    for r in log:
+        diseases[r["label"]] = diseases.get(r["label"], 0) + 1
+        ds = r.get("dataset", "kaggle")
+        by_ds[ds] = by_ds.get(ds, 0) + 1
+    return jsonify({"total": len(log), "correct": correct,
+                    "incorrect": len(log) - correct,
+                    "by_dataset": by_ds, "diseases": diseases})
+
+
+# ═══════════════════════════════════════════════════════════
+# BLOG
+# ═══════════════════════════════════════════════════════════
+
+ARTICLES = [
+    {
+        "slug":     "understanding-fever",
+        "title":    "Understanding Fever: When to Worry and When to Wait",
+        "category": "Symptoms",
+        "date":     "2025-06-01",
+        "author":   "Health Desk",
+        "summary":  "Fever is one of the most common symptoms people experience. Learn what causes it, what temperature is truly dangerous, and how to manage it at home.",
+        "read_time": "5 min",
+        "image_emoji": "🌡️",
+        "content": """
+<h2>What Is a Fever?</h2>
+<p>A fever is a temporary rise in body temperature, often due to an illness. It is a sign that something out of the ordinary is happening in your body. A temperature above 38°C (100.4°F) is generally considered a fever in adults.</p>
+
+<h2>Common Causes</h2>
+<ul>
+  <li><strong>Viral infections</strong> — influenza, COVID-19, common cold</li>
+  <li><strong>Bacterial infections</strong> — pneumonia, urinary tract infection, strep throat</li>
+  <li><strong>Inflammatory conditions</strong> — rheumatoid arthritis, inflammatory bowel disease</li>
+  <li><strong>Medications</strong> — some drugs can cause drug-induced fever</li>
+  <li><strong>Heat exhaustion</strong> — prolonged exposure to high temperatures</li>
+</ul>
+
+<h2>When Is a Fever Dangerous?</h2>
+<p>Most fevers in adults are not dangerous and resolve on their own. However, seek medical attention if:</p>
+<ul>
+  <li>Temperature exceeds 39.4°C (103°F)</li>
+  <li>Fever lasts more than three days</li>
+  <li>You experience a severe headache, stiff neck, rash, or confusion alongside fever</li>
+  <li>You have difficulty breathing or chest pain</li>
+  <li>The fever occurs in an infant under 3 months old</li>
+</ul>
+
+<h2>Home Management</h2>
+<p>For mild to moderate fever, these steps can help you feel more comfortable:</p>
+<ul>
+  <li>Stay hydrated — drink plenty of water, clear broth, or electrolyte drinks</li>
+  <li>Rest — your body needs energy to fight infection</li>
+  <li>Use over-the-counter medications like paracetamol (acetaminophen) or ibuprofen as directed</li>
+  <li>Wear lightweight clothing and keep the room cool</li>
+  <li>Use a damp, lukewarm cloth on your forehead</li>
+</ul>
+
+<h2>Key Takeaway</h2>
+<p>Fever is usually your body's natural defence mechanism working. Monitor your temperature, stay hydrated, and consult a doctor if symptoms worsen or persist beyond three days.</p>
+""",
+    },
+    {
+        "slug":     "joint-pain-causes",
+        "title":    "Joint Pain: 8 Common Causes and What They Mean",
+        "category": "Conditions",
+        "date":     "2025-06-08",
+        "author":   "Health Desk",
+        "summary":  "Joint pain can range from mildly irritating to completely debilitating. Understanding the cause is key to finding the right treatment.",
+        "read_time": "7 min",
+        "image_emoji": "🦴",
+        "content": """
+<h2>Why Do Joints Hurt?</h2>
+<p>Joints are where two or more bones meet, and pain can arise from the bone itself, cartilage, surrounding muscles, ligaments, or tendons. Identifying the pattern of pain — which joints, when it occurs, and other symptoms — is crucial for diagnosis.</p>
+
+<h2>8 Common Causes</h2>
+
+<h3>1. Osteoarthritis</h3>
+<p>The most common form of arthritis, caused by cartilage breakdown over time. It typically affects the knees, hips, and hands, and worsens with activity.</p>
+
+<h3>2. Rheumatoid Arthritis</h3>
+<p>An autoimmune condition where the immune system attacks the joints, causing inflammation, swelling, and pain — often symmetrically on both sides of the body.</p>
+
+<h3>3. Gout</h3>
+<p>Caused by a build-up of uric acid crystals in the joint. It causes sudden, severe pain often in the big toe, ankle, or knee.</p>
+
+<h3>4. Dengue Fever</h3>
+<p>A mosquito-borne viral infection that causes intense joint and muscle pain, earning it the nickname "breakbone fever." Accompanied by high fever and rash.</p>
+
+<h3>5. Lupus</h3>
+<p>An autoimmune disease that can cause joint pain, fatigue, skin rashes, and organ damage. Joint pain in lupus tends to move around.</p>
+
+<h3>6. Bursitis</h3>
+<p>Inflammation of the fluid-filled sacs (bursae) that cushion joints. Common in the shoulder, hip, and knee after repetitive motion.</p>
+
+<h3>7. Tendinitis</h3>
+<p>Inflammation of tendons, often from overuse. Common in the elbow (tennis elbow), shoulder, and knee.</p>
+
+<h3>8. Viral Infections</h3>
+<p>Many viral illnesses — influenza, COVID-19, chikungunya — cause temporary joint pain that resolves once the infection clears.</p>
+
+<h2>When to See a Doctor</h2>
+<p>Seek medical attention if joint pain is severe, persists beyond a few days, is accompanied by swelling or redness, follows an injury, or limits your daily movement.</p>
+""",
+    },
+    {
+        "slug":     "skin-rashes-guide",
+        "title":    "Skin Rashes: A Visual Guide to Common Types",
+        "category": "Dermatology",
+        "date":     "2025-06-15",
+        "author":   "Health Desk",
+        "summary":  "Not all rashes are the same. From chickenpox to contact dermatitis, learn how to recognise common skin conditions and when to seek help.",
+        "read_time": "6 min",
+        "image_emoji": "🩺",
+        "content": """
+<h2>Why Identifying Rashes Matters</h2>
+<p>Skin rashes are one of the most common reasons people visit a doctor. They can be caused by infections, allergies, autoimmune conditions, or environmental triggers. The appearance, location, and accompanying symptoms all provide crucial clues.</p>
+
+<h2>Common Rash Types</h2>
+
+<h3>Chickenpox (Varicella)</h3>
+<p>Starts as small red spots that develop into fluid-filled blisters, then crust over. Appears in waves over several days and is highly contagious. Accompanied by fever and itching.</p>
+
+<h3>Measles</h3>
+<p>A red, blotchy rash that starts on the face and spreads downward. Preceded by high fever, cough, runny nose, and red eyes. Now preventable by vaccination.</p>
+
+<h3>Dengue Fever Rash</h3>
+<p>A maculopapular rash (flat red area with small bumps) that appears 3–5 days after fever onset. Often described as "islands of white in a sea of red."</p>
+
+<h3>Psoriasis</h3>
+<p>Thick, scaly, silvery-white patches on the skin — often on elbows, knees, and scalp. A chronic autoimmune condition with no cure but many effective treatments.</p>
+
+<h3>Eczema (Atopic Dermatitis)</h3>
+<p>Dry, itchy, inflamed skin that can crack and weep. Common in children and often associated with asthma and allergies. Triggered by stress, irritants, and allergens.</p>
+
+<h3>Contact Dermatitis</h3>
+<p>A red, itchy rash caused by direct contact with an irritant (soap, chemical) or allergen (nickel, poison ivy). Appears only where the skin was exposed.</p>
+
+<h3>Drug Reaction Rash</h3>
+<p>Many medications can cause rashes, ranging from mild hives to severe reactions like Stevens-Johnson Syndrome. Any new rash after starting a medication should be reported to your doctor immediately.</p>
+
+<h2>Red Flag Symptoms</h2>
+<p>Go to an emergency room if a rash is accompanied by difficulty breathing, throat swelling, high fever and stiff neck, widespread blistering, or rapidly spreading redness.</p>
+""",
+    },
+    {
+        "slug":     "respiratory-health",
+        "title":    "Protecting Your Respiratory Health in 2025",
+        "category": "Prevention",
+        "date":     "2025-06-22",
+        "author":   "Health Desk",
+        "summary":  "From air quality to infection prevention, here are practical science-backed strategies to keep your lungs healthy year-round.",
+        "read_time": "8 min",
+        "image_emoji": "🫁",
+        "content": """
+<h2>Why Respiratory Health Matters</h2>
+<p>Your lungs process around 11,000 litres of air every day. Respiratory diseases — including asthma, COPD, pneumonia, and respiratory infections — are among the leading causes of death and disability worldwide.</p>
+
+<h2>Know Your Risk Factors</h2>
+<ul>
+  <li><strong>Smoking</strong> — the single biggest preventable cause of lung disease</li>
+  <li><strong>Air pollution</strong> — both outdoor (traffic, industry) and indoor (cooking smoke, mould)</li>
+  <li><strong>Occupational exposure</strong> — dust, chemicals, asbestos</li>
+  <li><strong>Respiratory infections</strong> — especially if repeated or severe</li>
+  <li><strong>Genetics</strong> — family history of asthma, cystic fibrosis, or alpha-1 antitrypsin deficiency</li>
+</ul>
+
+<h2>Practical Prevention Strategies</h2>
+
+<h3>Don't Smoke — and Avoid Secondhand Smoke</h3>
+<p>Quitting smoking at any age improves lung function and reduces disease risk. Avoid areas where others are smoking, including enclosed spaces.</p>
+
+<h3>Monitor Air Quality</h3>
+<p>Check your local air quality index (AQI) on high-pollution days, especially if you have asthma. Limit outdoor exercise when AQI exceeds 100. Use air purifiers with HEPA filters indoors.</p>
+
+<h3>Stay Vaccinated</h3>
+<p>Annual influenza vaccines and pneumococcal vaccines significantly reduce the risk of serious respiratory illness. COVID-19 boosters are recommended for high-risk groups.</p>
+
+<h3>Practice Hand Hygiene</h3>
+<p>Most respiratory viruses spread via droplets and contact. Frequent handwashing with soap for at least 20 seconds is one of the most effective preventive measures.</p>
+
+<h3>Exercise Regularly</h3>
+<p>Aerobic exercise strengthens the respiratory muscles and improves lung efficiency. Even a 30-minute walk five times per week makes a measurable difference.</p>
+
+<h3>Keep Indoor Air Clean</h3>
+<ul>
+  <li>Fix leaks promptly to prevent mould growth</li>
+  <li>Use exhaust fans when cooking</li>
+  <li>Avoid synthetic fragrances in enclosed spaces</li>
+  <li>Change HVAC filters regularly</li>
+</ul>
+
+<h2>Warning Signs</h2>
+<p>See a doctor promptly if you experience persistent cough (more than 3 weeks), coughing up blood, unexplained shortness of breath, wheezing, or recurring chest infections.</p>
+""",
+    },
+    {
+        "slug":     "ml-in-healthcare",
+        "title":    "How Machine Learning Is Transforming Disease Diagnosis",
+        "category": "Technology",
+        "date":     "2025-06-28",
+        "author":   "Health Desk",
+        "summary":  "From symptom checkers to radiology AI, machine learning is reshaping how doctors detect and diagnose disease. Here's what you need to know.",
+        "read_time": "9 min",
+        "image_emoji": "🤖",
+        "content": """
+<h2>The Promise of AI in Medicine</h2>
+<p>Machine learning (ML) — a form of artificial intelligence that learns patterns from data — is being applied across healthcare at an accelerating pace. From flagging abnormal X-rays to predicting patient deterioration, the applications are broad and growing.</p>
+
+<h2>Symptom Checkers and Triage</h2>
+<p>Tools like this disease predictor use supervised learning to classify symptoms into likely diagnoses. Trained on large datasets of patient symptoms and confirmed diagnoses, these classifiers can surface the most probable conditions in seconds.</p>
+<p>Common algorithms used include:</p>
+<ul>
+  <li><strong>Random Forest</strong> — an ensemble of decision trees that votes on the most likely outcome</li>
+  <li><strong>Gradient Boosting</strong> — builds trees sequentially, each correcting errors of the last</li>
+  <li><strong>Neural Networks</strong> — deep learning models that can capture complex non-linear relationships</li>
+</ul>
+
+<h2>Medical Imaging</h2>
+<p>AI models trained on millions of labelled medical images can now detect diabetic retinopathy from eye scans, flag suspicious lesions in mammograms, identify pneumonia from chest X-rays, and segment tumours in MRI scans — often with accuracy comparable to specialists.</p>
+
+<h2>Drug Discovery</h2>
+<p>ML is accelerating the drug discovery pipeline by predicting how molecules will interact with biological targets, identifying candidate compounds, and repurposing existing drugs for new indications. AlphaFold's protein structure predictions have been described as a revolution in structural biology.</p>
+
+<h2>Predictive Analytics in Hospitals</h2>
+<p>Hospitals are using ML models to predict which patients are at risk of deteriorating in the next few hours, readmission after discharge, development of sepsis, and length of stay. These models allow clinicians to intervene earlier.</p>
+
+<h2>Limitations and Ethical Considerations</h2>
+<p>ML in healthcare is not without risks. Models trained on non-representative datasets can perform poorly on underrepresented populations. Errors in high-stakes medical decisions can cause harm. Explainability — understanding <em>why</em> a model made a prediction — is essential for clinical trust.</p>
+<p>Regulatory frameworks (FDA, CE marking in Europe) are evolving to address these challenges, requiring clinical validation before AI tools can be used in medical settings.</p>
+
+<h2>The Role of Tools Like This Predictor</h2>
+<p>Consumer-facing symptom checkers are best viewed as educational and triage tools — helping users understand possible causes of symptoms and decide whether to seek medical care — rather than replacements for professional diagnosis. Used responsibly, they can improve health literacy and encourage earlier help-seeking.</p>
+""",
+    },
+    {
+        "slug":     "diabetes-prevention",
+        "title":    "Type 2 Diabetes: Prevention Starts Today",
+        "category": "Prevention",
+        "date":     "2025-07-02",
+        "author":   "Health Desk",
+        "summary":  "Type 2 diabetes affects hundreds of millions of people worldwide, but up to 70% of cases are preventable through lifestyle changes. Here's how to start.",
+        "read_time": "7 min",
+        "image_emoji": "🩸",
+        "content": """
+<h2>Understanding Type 2 Diabetes</h2>
+<p>Type 2 diabetes occurs when the body becomes resistant to insulin or doesn't produce enough to maintain normal blood glucose levels. Unlike type 1 diabetes, it develops gradually — often over years — and is strongly linked to lifestyle factors.</p>
+
+<h2>Risk Factors</h2>
+<ul>
+  <li>Overweight or obesity, especially abdominal fat</li>
+  <li>Physical inactivity</li>
+  <li>Family history of diabetes</li>
+  <li>Age over 45 (though incidence in younger people is rising)</li>
+  <li>Previous gestational diabetes</li>
+  <li>Prediabetes (higher than normal blood glucose, not yet in diabetic range)</li>
+  <li>Polycystic ovary syndrome (PCOS)</li>
+</ul>
+
+<h2>Warning Signs</h2>
+<p>Type 2 diabetes often develops silently, but symptoms may include:</p>
+<ul>
+  <li>Increased thirst and frequent urination</li>
+  <li>Unexplained fatigue</li>
+  <li>Blurred vision</li>
+  <li>Slow-healing wounds</li>
+  <li>Frequent infections</li>
+  <li>Numbness or tingling in hands and feet</li>
+</ul>
+
+<h2>Prevention Strategies</h2>
+
+<h3>Maintain a Healthy Weight</h3>
+<p>Losing just 5–7% of body weight if overweight significantly reduces diabetes risk. Focus on sustainable changes rather than crash diets.</p>
+
+<h3>Move More</h3>
+<p>Aim for at least 150 minutes of moderate-intensity activity per week — brisk walking, cycling, swimming. Resistance training also improves insulin sensitivity.</p>
+
+<h3>Eat a Balanced Diet</h3>
+<ul>
+  <li>Choose whole grains over refined carbohydrates</li>
+  <li>Eat plenty of vegetables and legumes</li>
+  <li>Limit sugary drinks and ultra-processed foods</li>
+  <li>Include healthy fats (olive oil, nuts, avocado)</li>
+</ul>
+
+<h3>Quit Smoking</h3>
+<p>Smokers are 30–40% more likely to develop type 2 diabetes than non-smokers.</p>
+
+<h3>Get Regular Screening</h3>
+<p>A simple fasting blood glucose or HbA1c test can detect prediabetes early, when intervention is most effective. Ask your doctor about screening if you have risk factors.</p>
+
+<h2>The Bottom Line</h2>
+<p>Type 2 diabetes is not inevitable. Small, consistent lifestyle changes — more movement, better nutrition, healthy weight — can prevent or significantly delay its onset, even in people with strong genetic risk.</p>
+""",
+    },
+
+  {
+        "slug":     "prevent-score-heart-risk",
+        "title":    "Have You Checked Your PREVENT Score?",
+        "category": "Prevention",
+        "date":     "2025-07-05",
+        "author":   "Wellness Desk",
+        "summary":  "The AHA PREVENT Score is the latest tool for assessing your 10-year and 30-year risk of heart disease — race-free, kidney-aware, and built for the modern era.",
+        "read_time": "6 min",
+        "image_emoji": "❤️",
+        "content": """
+<h2>What Is the PREVENT Score?</h2>
+<p>Introduced as a modern alternative to the traditional Pooled Cohort Equations (PCE), the <strong>PREVENT (Predicting Risk of CVD EVENTs) Score</strong> is the American Heart Association's latest standard for evaluating heart health in adults aged 30 to 79 who do not already have diagnosed heart disease.</p>
+<p>By looking beyond basic cholesterol levels, it provides a comprehensive view of a patient's cardiovascular-kidney-metabolic (CKM) health — estimating your likelihood of a major cardiovascular event over both a <strong>10-year and 30-year</strong> span.</p>
+ 
+<h2>What Makes PREVENT Different?</h2>
+<p>The older PCE model was widely criticised for overestimating risk in some populations and lacking data for younger or highly diverse demographics. The PREVENT equations improve upon these limitations in four key ways:</p>
+<ul>
+  <li><strong>Race-Free Calculation</strong> — The algorithm removes race as a biological predictor, calculating risk more equitably across all demographic groups.</li>
+  <li><strong>Includes Kidney Health</strong> — It measures the kidneys' estimated glomerular filtration rate (eGFR), acknowledging the strong link between chronic kidney disease and heart disease.</li>
+  <li><strong>Adds Heart Failure Prediction</strong> — Unlike older calculators, it predicts the risk of heart failure alongside stroke and heart attacks (ASCVD).</li>
+  <li><strong>Factors in Social Disadvantage</strong> — It incorporates place-based social determinants of health, such as access to healthcare and socioeconomic barriers, which directly impact heart health.</li>
+</ul>
+ 
+<h2>How Are the Results Interpreted?</h2>
+<p>The 10-year ASCVD risk categories are interpreted as follows:</p>
+<ul>
+  <li><strong>Low Risk</strong> — Less than 3%</li>
+  <li><strong>Borderline Risk</strong> — 3% to less than 5%</li>
+  <li><strong>Intermediate Risk</strong> — 5% to less than 10%</li>
+  <li><strong>High Risk</strong> — 10% or above</li>
+</ul>
+<p>For patients in the Intermediate or High Risk categories, doctors often recommend lifestyle modifications alongside targeted preventive therapies — such as lipid-lowering agents or blood pressure management.</p>
+ 
+<h2>Why It Matters</h2>
+<p>Because the PREVENT Score includes young adults starting at age 30, it allows patients and doctors to establish preventative strategies long before irreversible arterial damage occurs. Using the <a href="https://professional.heart.org/en/guidelines-and-statements/prevent-calculator" target="_blank" rel="noopener" style="color:var(--accent)">AHA PREVENT Online Calculator</a>, physicians can catch risk factors much earlier in life.</p>
+<p>The inclusion of kidney function and social determinants also means the score paints a far more honest picture of a patient's real-world cardiovascular risk — not just their lab numbers in isolation.</p>
+ 
+<h2>Key Risk Factors to Know</h2>
+<p>To calculate your own PREVENT Score, your doctor will typically need:</p>
+<ul>
+  <li>Your <strong>age</strong> (30–79)</li>
+  <li><strong>Systolic blood pressure</strong> and whether you are on treatment for hypertension</li>
+  <li><strong>Total cholesterol and HDL cholesterol</strong> levels</li>
+  <li>Whether you have a <strong>history of diabetes</strong></li>
+  <li>Your <strong>eGFR</strong> (kidney function, from a standard blood test)</li>
+  <li>Whether you are a <strong>current smoker</strong></li>
+  <li>Optionally, your <strong>BMI</strong> and a measure of area deprivation index</li>
+</ul>
+ 
+<h2>What to Do With Your Score</h2>
+<p>A PREVENT Score is a conversation starter with your doctor, not a verdict. If your risk is low, it is reassurance — and motivation to keep your lifestyle healthy. If it is intermediate or high, it opens the door to evidence-based interventions that can meaningfully reduce your risk over decades.</p>
+<p>Talk to your healthcare provider about whether calculating your PREVENT Score is appropriate for you, especially if you have a family history of early heart disease, diabetes, kidney disease, or high blood pressure.</p>
+""",
+    },    
+]
+
+
+@app.route("/blog")
+def blog_index():
+    return send_from_directory(".", "blog.html")
+
+
+@app.route("/blog/<slug>")
+def blog_article(slug):
+    return send_from_directory(".", "article.html")
+
+
+@app.route("/api/articles")
+def api_articles():
+    """Return article list (no content bodies — for listing page)."""
+    return jsonify([{k: v for k, v in a.items() if k != "content"}
+                    for a in ARTICLES])
+
+
+@app.route("/api/articles/<slug>")
+def api_article(slug):
+    """Return single article including full content."""
+    article = next((a for a in ARTICLES if a["slug"] == slug), None)
+    if not article:
+        return jsonify({"error": "Article not found"}), 404
+    return jsonify(article)
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    print(f"\n🌐  Running at http://localhost:{port}\n")
+    app.run(host="0.0.0.0", port=port, debug=False)

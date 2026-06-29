@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="/static/shared.css">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Disease Predictor</title>
+<style>
+:root{
+  --bg:#0d1117;--surface:#161b22;--surface2:#1c2330;--border:#30363d;
+  --text:#e6edf3;--muted:#8b949e;--accent:#3fb950;--blue:#1f6feb;
+  --orange:#e36209;--warn:#d29922;--danger:#f85149;--r:10px;
+  --font:'Inter',system-ui,sans-serif;
+}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:15px;
+  line-height:1.6;min-height:100vh;display:flex;flex-direction:column;
+  align-items:center;padding:32px 16px 80px}
+header{text-align:center;margin-bottom:32px;max-width:720px;width:100%}
+.logo{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:600;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:12px}
+h1{font-size:clamp(24px,5vw,38px);font-weight:600;letter-spacing:-.02em;line-height:1.2;margin-bottom:8px}
+h1 .k{color:var(--accent)} h1 .d{color:var(--orange)}
+.subtitle{color:var(--muted);font-size:14px;max-width:480px;margin:0 auto}
+.ds-toggle{display:inline-flex;background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--r);padding:4px;gap:4px;margin-bottom:22px}
+.ds-btn{padding:8px 24px;border-radius:7px;border:none;font-family:var(--font);
+  font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;background:transparent;color:var(--muted)}
+.ds-btn.ak{background:var(--accent);color:#0d1117}
+.ds-btn.ad{background:var(--orange);color:#fff}
+.ds-info{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-bottom:22px;font-size:12px;color:var(--muted)}
+.badge{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:4px 12px}
+.badge b{color:var(--text)} .badge.off{opacity:.4}
+.layout{display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:960px;width:100%}
+@media(max-width:660px){.layout{grid-template-columns:1fr}}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:22px}
+.card-title{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+.span2{grid-column:1/-1}
+textarea{width:100%;min-height:106px;background:var(--surface2);border:1px solid var(--border);
+  border-radius:var(--r);color:var(--text);font-family:var(--font);font-size:15px;line-height:1.6;
+  padding:12px 14px;resize:vertical;outline:none;transition:border-color .15s}
+textarea:focus{border-color:var(--blue)} textarea::placeholder{color:var(--muted)}
+.demo{display:none;flex-wrap:wrap;gap:12px;align-items:center;margin-top:10px}
+.demo.on{display:flex}
+.demo label{font-size:13px;color:var(--muted)}
+.demo input,.demo select{background:var(--surface2);border:1px solid var(--border);
+  border-radius:6px;color:var(--text);font-family:var(--font);font-size:13px;padding:5px 10px;outline:none}
+.demo input{width:72px} .demo select{width:72px}
+.demo input:focus,.demo select:focus{border-color:var(--blue)}
+.demo .hint{font-size:11px;color:var(--muted)}
+.examples{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.ex{background:var(--surface2);border:1px solid var(--border);border-radius:6px;
+  color:var(--muted);font-size:12px;padding:3px 9px;cursor:pointer;font-family:var(--font);transition:color .15s,border-color .15s}
+.ex:hover{color:var(--text);border-color:var(--blue)}
+.btn{display:inline-flex;align-items:center;gap:8px;border:none;border-radius:var(--r);
+  font-family:var(--font);font-size:14px;font-weight:600;padding:10px 22px;cursor:pointer;
+  margin-top:12px;transition:opacity .15s,transform .1s}
+.btn:hover{opacity:.88} .btn:active{transform:scale(.98)} .btn:disabled{opacity:.38;cursor:not-allowed}
+.btn-k{background:var(--accent);color:#0d1117} .btn-d{background:var(--orange);color:#fff}
+.spin{width:14px;height:14px;border:2px solid rgba(0,0,0,.2);border-top-color:currentColor;
+  border-radius:50%;animation:rot .6s linear infinite;display:none}
+.btn.busy .spin{display:block} .btn.busy .bt{opacity:0}
+@keyframes rot{to{transform:rotate(360deg)}}
+.status{font-size:13px;color:var(--muted);padding:5px 0;min-height:20px}
+.status.err{color:var(--danger)} .status.ok{color:var(--accent)} .status.warn{color:var(--warn)}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+.chip{background:var(--surface2);border:1px solid var(--border);border-radius:20px;font-size:12px;padding:2px 9px}
+.chip.neg{border-color:var(--danger);color:var(--danger)}
+.plist{display:flex;flex-direction:column;gap:10px}
+.ptop{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px}
+.pdis{font-weight:500;font-size:14px} .pprob{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.btrack{height:6px;background:var(--surface2);border-radius:3px;overflow:hidden}
+.bfill{height:100%;border-radius:3px;transition:width .55s cubic-bezier(.4,0,.2,1);width:0}
+.ctbl{width:100%;border-collapse:collapse;font-size:13px}
+.ctbl th{text-align:left;color:var(--muted);font-weight:500;padding:0 0 7px;border-bottom:1px solid var(--border)}
+.ctbl td{padding:7px 0;border-bottom:1px solid var(--surface2);vertical-align:middle}
+.ctbl td:last-child{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+.mbadge{font-size:11px;background:var(--surface2);border-radius:4px;padding:2px 5px;color:var(--muted);margin-right:5px}
+.fb-q{font-size:13px;color:var(--muted);margin-bottom:10px}
+.fb-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.fb-top{font-weight:500;font-size:14px} .fb-ds{font-size:12px;color:var(--muted);margin-left:4px}
+.fbtn{background:var(--surface2);border:1px solid var(--border);border-radius:6px;
+  color:var(--text);font-size:13px;padding:5px 14px;cursor:pointer;font-family:var(--font);
+  transition:border-color .15s,color .15s;margin-top:10px}
+.fbtn.yes:hover{border-color:var(--accent);color:var(--accent)}
+.fbtn.no:hover{border-color:var(--danger);color:var(--danger)}
+.fb-corr{display:none;margin-top:10px;gap:8px;align-items:center}
+.fb-corr.on{display:flex}
+.fb-corr input{flex:1;background:var(--surface2);border:1px solid var(--border);
+  border-radius:6px;color:var(--text);font-family:var(--font);font-size:13px;padding:5px 9px;outline:none}
+.fb-corr input:focus{border-color:var(--blue)}
+/* Ambiguous modal */
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:100;
+  align-items:center;justify-content:center;padding:16px}
+.overlay.on{display:flex}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+  padding:28px;max-width:500px;width:100%;max-height:90vh;overflow-y:auto}
+.modal h2{font-size:16px;font-weight:600;margin-bottom:6px}
+.modal p{font-size:13px;color:var(--muted);margin-bottom:20px}
+.amb-group{margin-bottom:18px;padding-bottom:18px;border-bottom:1px solid var(--border)}
+.amb-group:last-of-type{border-bottom:none;margin-bottom:0;padding-bottom:0}
+.amb-phrase{font-size:13px;font-weight:600;color:var(--warn);margin-bottom:8px}
+.amb-phrase span{font-size:11px;color:var(--muted);font-weight:400;margin-left:6px}
+.amb-opt{display:flex;align-items:center;gap:10px;cursor:pointer;
+  background:var(--surface2);border:1px solid var(--border);border-radius:7px;
+  padding:9px 12px;margin-bottom:6px;transition:border-color .15s}
+.amb-opt:hover{border-color:var(--blue)}
+.amb-opt input[type=radio]{accent-color:var(--blue);width:15px;height:15px;flex-shrink:0}
+.amb-lbl{flex:1;font-size:13px} .amb-sc{font-size:11px;color:var(--muted)}
+.amb-opt.skip{border-style:dashed}
+.modal-actions{display:flex;gap:10px;margin-top:20px;justify-content:flex-end}
+.mbtn{background:var(--blue);border:none;border-radius:7px;color:#fff;font-family:var(--font);
+  font-size:14px;font-weight:600;padding:9px 22px;cursor:pointer;transition:opacity .15s}
+.mbtn:hover{opacity:.88} .mbtn.sec{background:var(--surface2);border:1px solid var(--border);color:var(--text)}
+.disc{margin-top:28px;max-width:660px;text-align:center;font-size:12px;color:var(--muted);line-height:1.5}
+.disc strong{color:var(--warn)}
+</style>
+</head>
+<body>
+<nav>
+  <div class="nav-inner">
+    <a class="nav-logo" href="/"><span class="dot">◆</span> HealthPredict</a>
+    <ul class="nav-links">
+      <li><a href="/" class="active">🔬 Symptom Checker</a></li>
+      <li><a href="/blog">📰 Health Blog</a></li>
+    </ul>
+  </div>
+</nav>
+
+<nav>
+  <div class="nav-inner">
+    <a class="nav-logo" href="/"><span class="dot">◆</span> HealthPredict</a>
+    <ul class="nav-links">
+      <li><a href="/" class="active">🔬 Symptom Checker</a></li>
+      <li><a href="/blog">📰 Health Blog</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- Ambiguous symptom picker modal -->
+<div class="overlay" id="amb-overlay">
+  <div class="modal">
+    <h2>⚠ Ambiguous symptoms</h2>
+    <p>Some symptoms matched multiple possibilities. Pick the best match for each, or skip.</p>
+    <div id="amb-groups"></div>
+    <div class="modal-actions">
+      <button class="mbtn sec" onclick="closeAmb()">Cancel</button>
+      <button class="mbtn"     onclick="submitAmb()">Confirm &amp; Predict</button>
+    </div>
+  </div>
+</div>
+
+<header>
+  <div class="logo">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+    Disease Predictor
+  </div>
+  <h1 id="htitle">Symptom <span class="k">Checker</span></h1>
+  <p class="subtitle" id="hsub">Choose a dataset below, then describe your symptoms.</p>
+</header>
+
+<div class="ds-toggle">
+  <button class="ds-btn ak" id="btn-k" onclick="switchDS('kaggle')">📊 Kaggle</button>
+  <button class="ds-btn"    id="btn-d" onclick="switchDS('ddxplus')">🧬 DDXPlus</button>
+</div>
+
+<div class="ds-info">
+  <div class="badge" id="badge-k">Kaggle — <b id="k-stat">loading…</b></div>
+  <div class="badge" id="badge-d">DDXPlus — <b id="d-stat">loading…</b></div>
+</div>
+
+<div class="layout">
+  <div class="card span2">
+    <div class="card-title" id="inp-title">Describe your symptoms</div>
+    <textarea id="sym-input" placeholder="e.g. I've had a high fever for two days, joints ache badly and I have a rash…"></textarea>
+    <div class="demo" id="demo">
+      <label>Age</label>
+      <input type="number" id="age" value="35" min="1" max="120">
+      <label>Sex</label>
+      <select id="sex"><option value="M">Male</option><option value="F">Female</option></select>
+      <span class="hint">Used by the DDXPlus model to improve accuracy</span>
+    </div>
+    <div class="examples" id="ex-row"></div>
+    <button class="btn btn-k" id="pred-btn" onclick="predict()">
+      <div class="spin"></div><span class="bt">Analyse symptoms</span>
+    </button>
+    <div class="status" id="main-status"></div>
+  </div>
+
+  <div class="card" id="res-card" style="display:none">
+    <div class="card-title">Top predictions</div>
+    <div class="plist" id="plist"></div>
+    <div style="margin-top:16px">
+      <div class="card-title" style="margin-bottom:6px">Matched symptoms</div>
+      <div class="chips" id="sym-chips"></div>
+    </div>
+  </div>
+
+  <div class="card" id="cmp-card" style="display:none">
+    <div class="card-title">All model predictions</div>
+    <table class="ctbl">
+      <thead><tr><th>Disease</th><th style="text-align:right">Probability</th></tr></thead>
+      <tbody id="cmp-body"></tbody>
+    </table>
+  </div>
+
+  <div class="card span2" id="fb-card" style="display:none">
+    <div class="card-title">Feedback</div>
+    <p class="fb-q">Was the top prediction correct? Your answer helps improve the model.</p>
+    <div class="fb-row">
+      <span class="fb-top" id="fb-top"></span>
+      <span class="fb-ds"  id="fb-ds"></span>
+    </div>
+    <div>
+      <button class="fbtn yes" onclick="sendFeedback(true)">✓ Correct</button>
+      <button class="fbtn no"  onclick="showCorr()">✗ Wrong — let me correct it</button>
+    </div>
+    <div class="fb-corr" id="fb-corr">
+      <input type="text" id="corr-inp" placeholder="Type the correct disease name…">
+      <button class="fbtn" onclick="sendFeedback(false)">Submit correction</button>
+    </div>
+    <div class="status" id="fb-status"></div>
+  </div>
+</div>
+
+
+<script>
+const API = "";
+let DS = "kaggle", STATUS = null;
+let lastMatch = [], lastTop = "", lastDS = "kaggle";
+let pendingAmb = null, pendingResolved = [];
+
+const EXAMPLES = {
+  kaggle:  ["fever, joint pain, skin rash","vomiting, yellow skin, dark urine","chest tightness, short of breath, sweating","severe headache, dizzy, stiff neck"],
+  ddxplus: ["I've had a high fever for two days and my joints ache badly","shortness of breath, chest pain, coughing up phlegm","severe headache, sensitivity to light, stiff neck","abdominal pain, nausea, loss of appetite, fatigue"],
+};
+const COLORS = {
+  kaggle:  ["#3fb950","#1f6feb","#8b949e","#8b949e","#8b949e"],
+  ddxplus: ["#e36209","#d29922","#8b949e","#8b949e","#8b949e"],
+};
+
+async function init() {
+  try {
+    STATUS = await fetch(API+"/api/status").then(r=>r.json());
+    const k=STATUS.kaggle, d=STATUS.ddxplus;
+    document.getElementById("k-stat").textContent = `${k.diseases} diseases · ${k.symptoms} symptoms`;
+    if (d.available) {
+      document.getElementById("d-stat").textContent = `${d.diseases} diseases · ${d.evidences} evidences · ${(d.train_rows||0).toLocaleString()} patients`;
+    } else {
+      document.getElementById("d-stat").textContent = "not loaded — download from figshare";
+      document.getElementById("badge-d").classList.add("off");
+    }
+  } catch { document.getElementById("k-stat").textContent = "server not reachable"; }
+  renderExamples();
+}
+
+function switchDS(ds) {
+  DS = ds; const isK = ds==="kaggle";
+  document.getElementById("btn-k").className = "ds-btn"+(isK?" ak":"");
+  document.getElementById("btn-d").className = "ds-btn"+(isK?"":" ad");
+  document.getElementById("htitle").innerHTML = isK ? 'Symptom <span class="k">Checker</span>' : 'Symptom <span class="d">Checker</span>';
+  document.getElementById("hsub").textContent = isK ? "Kaggle dataset — 41 diseases · 132 symptoms" : "DDXPlus dataset — 49 diseases · 223 symptoms + age & sex";
+  document.getElementById("pred-btn").className = `btn btn-${isK?"k":"d"}`;
+  document.getElementById("demo").className = "demo"+(isK?"":" on");
+  ["res-card","cmp-card","fb-card"].forEach(id=>document.getElementById(id).style.display="none");
+  setStatus("","");
+  if (!isK && STATUS && !STATUS.ddxplus.available)
+    setStatus("⚠ DDXPlus not loaded. Download from figshare and restart app.py.","warn");
+  renderExamples();
+}
+
+function renderExamples() {
+  document.getElementById("ex-row").innerHTML = EXAMPLES[DS].map(e=>`<button class="ex" onclick="fillEx(this)">${e}</button>`).join("");
+}
+function fillEx(btn) { document.getElementById("sym-input").value = btn.textContent.trim(); }
+function setStatus(msg,type="") { const el=document.getElementById("main-status"); el.textContent=msg; el.className="status"+(type?" "+type:""); }
+function setBusy(on) { const b=document.getElementById("pred-btn"); b.disabled=on; on?b.classList.add("busy"):b.classList.remove("busy"); }
+
+async function predict() {
+  const text = document.getElementById("sym-input").value.trim();
+  if (!text) { setStatus("Please describe your symptoms first.","err"); return; }
+  setBusy(true); setStatus("Analysing…");
+  ["res-card","cmp-card","fb-card"].forEach(id=>document.getElementById(id).style.display="none");
+  try {
+    const res  = await fetch(API+"/api/predict",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text,dataset:DS,age:parseFloat(document.getElementById("age").value)||35,sex:document.getElementById("sex").value})});
+    const data = await res.json();
+    if (!res.ok) { setStatus(data.error||"Server error.","err"); return; }
+    if (data.status==="ambiguous") {
+      pendingAmb=data; pendingResolved=data.resolved||[];
+      showAmbDialog(data.ambiguous);
+      setStatus("⚠ Some symptoms were ambiguous — please clarify below.","warn");
+    } else { handleResult(data); }
+  } catch { setStatus("Cannot reach the server. Is app.py running?","err"); }
+  finally  { setBusy(false); }
+}
+
+function handleResult(data) {
+  if (!data.predictions?.length) { setStatus(data.message||"No symptoms matched.","err"); return; }
+  lastMatch=data.matched_symptoms||[]; lastDS=data.dataset; lastTop=data.predictions[0]?.disease||"";
+  const colors=COLORS[data.dataset]||COLORS.kaggle;
+
+  document.getElementById("plist").innerHTML = data.predictions.slice(0,5).map((p,i)=>`
+    <div class="pred-item">
+      <div class="ptop"><span class="pdis">${p.disease}</span><span class="pprob">${(p.probability*100).toFixed(1)}%</span></div>
+      <div class="btrack"><div class="bfill" data-pct="${p.probability*100}" style="background:${colors[i]||colors[colors.length-1]}"></div></div>
+    </div>`).join("");
+  document.getElementById("res-card").style.display="block";
+  requestAnimationFrame(()=>{document.querySelectorAll(".bfill").forEach(el=>{el.style.width=el.dataset.pct+"%"})});
+
+  let chips = lastMatch.map(s=>`<span class="chip">${s}</span>`).join("");
+  if (data.negated_symptoms?.length) chips += data.negated_symptoms.map(s=>`<span class="chip neg">✗ ${s}</span>`).join("");
+  document.getElementById("sym-chips").innerHTML = chips;
+
+  const all=data.all_model_predictions||[], best={};
+  all.forEach(p=>{if(!best[p.disease]||p.probability>best[p.disease].probability)best[p.disease]=p;});
+  document.getElementById("cmp-body").innerHTML = Object.values(best).sort((a,b)=>b.probability-a.probability).slice(0,8)
+    .map(p=>`<tr><td><span class="mbadge">${p.model.split(" ")[0]}</span>${p.disease}</td><td>${(p.probability*100).toFixed(1)}%</td></tr>`).join("");
+  document.getElementById("cmp-card").style.display="block";
+
+  document.getElementById("fb-top").textContent = lastTop;
+  document.getElementById("fb-ds").textContent  = `(${data.dataset==="kaggle"?"Kaggle":"DDXPlus"})`;
+  document.getElementById("fb-card").style.display="block";
+  document.getElementById("fb-status").textContent="";
+  document.getElementById("fb-corr").classList.remove("on");
+  setStatus("","");
+}
+
+function showAmbDialog(ambiguous) {
+  document.getElementById("amb-groups").innerHTML = ambiguous.map((item,gi)=>`
+    <div class="amb-group">
+      <div class="amb-phrase">"${item.phrase}" <span>— which did you mean?</span></div>
+      ${item.candidates.map((c,ci)=>`
+        <label class="amb-opt">
+          <input type="radio" name="amb_${gi}" value="${c.col}" ${ci===0?"checked":""}>
+          <span class="amb-lbl">${c.label}</span>
+          <span class="amb-sc">${c.score}%</span>
+        </label>`).join("")}
+      <label class="amb-opt skip">
+        <input type="radio" name="amb_${gi}" value="__skip__">
+        <span class="amb-lbl" style="color:var(--muted)">Skip this symptom</span>
+      </label>
+    </div>`).join("");
+  document.getElementById("amb-overlay").classList.add("on");
+}
+
+function closeAmb() { document.getElementById("amb-overlay").classList.remove("on"); pendingAmb=null; pendingResolved=[]; }
+
+async function submitAmb() {
+  if (!pendingAmb) return;
+  const picked=[];
+  document.querySelectorAll("#amb-groups .amb-group").forEach((_,gi)=>{
+    const c=document.querySelector(`input[name="amb_${gi}"]:checked`);
+    if(c && c.value!=="__skip__") picked.push(c.value);
+  });
+  const allCols=[...new Set([...pendingResolved,...picked])];
+  closeAmb(); setBusy(true); setStatus("Running prediction…");
+  try {
+    const res  = await fetch(API+"/api/resolve",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({dataset:pendingAmb?.dataset||DS,resolved_cols:allCols,negated:pendingAmb?.negated||[],
+        age:parseFloat(document.getElementById("age").value)||35,sex:document.getElementById("sex").value})});
+    const data = await res.json();
+    if (!res.ok) { setStatus(data.error||"Server error.","err"); return; }
+    handleResult(data);
+  } catch { setStatus("Cannot reach the server.","err"); }
+  finally   { setBusy(false); }
+}
+
+function showCorr() { document.getElementById("fb-corr").classList.add("on"); document.getElementById("corr-inp").focus(); }
+async function sendFeedback(correct) {
+  const label = correct ? lastTop : document.getElementById("corr-inp").value.trim();
+  if (!label) return;
+  try {
+    const res  = await fetch(API+"/api/feedback",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({symptoms:lastMatch,label,correct,dataset:lastDS})});
+    const data = await res.json();
+    const el   = document.getElementById("fb-status");
+    el.textContent=data.message||"Saved!"; el.className="status ok";
+    document.getElementById("fb-corr").classList.remove("on");
+  } catch { document.getElementById("fb-status").textContent="Could not save feedback."; }
+}
+
+document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="Enter")predict();});
+init();
+</script>
+
+<footer>
+  <strong>⚠ Educational use only.</strong>
+  Not a substitute for professional medical advice. Always consult a qualified doctor.<br>
+  <a href="/">Symptom Checker</a> · <a href="/blog">Health Blog</a>
+</footer>
+</body>
+</html>

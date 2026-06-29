@@ -1,0 +1,116 @@
+/* shared.css — design tokens and nav used by all pages */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,600;1,400&display=swap');
+
+:root {
+  --bg:       #0d1117;
+  --surface:  #161b22;
+  --surface2: #1c2330;
+  --border:   #30363d;
+  --text:     #e6edf3;
+  --muted:    #8b949e;
+  --accent:   #3fb950;
+  --blue:     #1f6feb;
+  --orange:   #e36209;
+  --warn:     #d29922;
+  --danger:   #f85149;
+  --r:        10px;
+  --font:     'Inter', system-ui, sans-serif;
+  --serif:    'Lora', Georgia, serif;
+  --max:      900px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.7;
+  min-height: 100vh;
+}
+
+/* ── Navigation ────────────────────────────────────────── */
+nav {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+.nav-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 24px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 32px;
+}
+.nav-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--text);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.nav-logo .dot { color: var(--accent); }
+.nav-links {
+  display: flex;
+  gap: 4px;
+  list-style: none;
+  flex: 1;
+}
+.nav-links a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 6px;
+  transition: color .15s, background .15s;
+}
+.nav-links a:hover  { color: var(--text); background: var(--surface2); }
+.nav-links a.active { color: var(--text); background: var(--surface2); }
+.nav-cta {
+  background: var(--accent);
+  color: #0d1117 !important;
+  border-radius: 7px;
+  padding: 6px 14px !important;
+  font-weight: 600 !important;
+}
+.nav-cta:hover { opacity: .88; background: var(--accent) !important; }
+
+/* ── Footer ────────────────────────────────────────────── */
+footer {
+  margin-top: 80px;
+  border-top: 1px solid var(--border);
+  padding: 32px 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+footer a { color: var(--muted); }
+footer strong { color: var(--warn); }
+
+/* ── Utilities ─────────────────────────────────────────── */
+.container { max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.badge.symptoms    { border-color: #f851494d; color: var(--danger); }
+.badge.conditions  { border-color: #1f6feb4d; color: var(--blue);   }
+.badge.prevention  { border-color: #3fb9504d; color: var(--accent); }
+.badge.dermatology { border-color: #d299224d; color: var(--warn);   }
+.badge.technology  { border-color: #e362094d; color: var(--orange); }

@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blog Admin — WellnessCheck</title>
+<link rel="stylesheet" href="/static/shared.css">
+<style>
+.admin-layout { max-width: 1100px; margin: 40px auto; padding: 0 24px; display: grid; grid-template-columns: 300px 1fr; gap: 24px; }
+@media(max-width:760px){ .admin-layout{ grid-template-columns:1fr } }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:22px; }
+.card-title { font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin-bottom:16px; }
+
+/* Article list */
+.art-list { display:flex; flex-direction:column; gap:8px; }
+.art-item { display:flex; align-items:center; gap:10px; padding:10px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:7px; cursor:pointer; transition:border-color .15s; }
+.art-item:hover, .art-item.active { border-color:var(--accent); }
+.art-item-emoji { font-size:22px; flex-shrink:0; }
+.art-item-info { flex:1; min-width:0; }
+.art-item-title { font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.art-item-meta  { font-size:11px; color:var(--muted); }
+.art-item-del { background:none; border:none; color:var(--muted); font-size:16px; cursor:pointer; padding:4px 6px; border-radius:4px; transition:color .15s; flex-shrink:0; }
+.art-item-del:hover { color:var(--danger); }
+.new-btn { width:100%; background:var(--accent); border:none; border-radius:7px; color:#0d1117; font-family:var(--font); font-size:14px; font-weight:600; padding:10px; cursor:pointer; margin-bottom:14px; transition:opacity .15s; }
+.new-btn:hover { opacity:.88; }
+
+/* Form */
+.form-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+@media(max-width:600px){ .form-grid{ grid-template-columns:1fr } }
+.field { display:flex; flex-direction:column; gap:5px; }
+.field.full { grid-column:1/-1; }
+label { font-size:12px; font-weight:600; color:var(--muted); letter-spacing:.04em; text-transform:uppercase; }
+input, select, textarea {
+  background:var(--surface2); border:1px solid var(--border); border-radius:7px;
+  color:var(--text); font-family:var(--font); font-size:14px; padding:9px 12px; outline:none;
+  transition:border-color .15s; width:100%;
+}
+input:focus, select:focus, textarea:focus { border-color:var(--blue); }
+textarea.content-area { min-height:300px; font-family:monospace; font-size:13px; resize:vertical; }
+.form-actions { display:flex; gap:10px; margin-top:8px; grid-column:1/-1; }
+.btn-save { background:var(--accent); border:none; border-radius:7px; color:#0d1117; font-family:var(--font); font-size:14px; font-weight:600; padding:10px 24px; cursor:pointer; transition:opacity .15s; }
+.btn-save:hover { opacity:.88; }
+.btn-clear { background:var(--surface2); border:1px solid var(--border); border-radius:7px; color:var(--muted); font-family:var(--font); font-size:14px; padding:10px 18px; cursor:pointer; }
+.status { font-size:13px; padding:5px 0; min-height:20px; grid-column:1/-1; }
+.status.ok  { color:var(--accent); } .status.err { color:var(--danger); }
+
+/* Preview */
+.preview-panel { margin-top:20px; padding-top:16px; border-top:1px solid var(--border); }
+.preview-title { font-size:12px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-bottom:10px; }
+.preview-body { font-size:14px; line-height:1.7; color:#c9d1d9; max-height:300px; overflow-y:auto; padding:14px; background:var(--surface2); border-radius:7px; border:1px solid var(--border); }
+.preview-body h2 { font-size:16px; font-weight:600; color:var(--text); margin:20px 0 8px; }
+.preview-body h3 { font-size:14px; font-weight:600; color:var(--text); margin:14px 0 6px; }
+.preview-body p  { margin-bottom:10px; }
+.preview-body ul,.preview-body ol { margin:0 0 10px 20px; }
+.preview-body li { margin-bottom:4px; }
+
+/* Hint box */
+.hint-box { background:var(--surface2); border:1px solid var(--border); border-radius:7px; padding:14px 16px; font-size:12px; color:var(--muted); line-height:1.6; margin-top:14px; }
+.hint-box code { background:#0d1117; padding:1px 5px; border-radius:3px; color:var(--accent); font-size:11px; }
+</style>
+</head>
+<body>
+<nav>
+  <div class="nav-inner">
+    <a class="nav-logo" href="/"><span class="dot">◆</span> WellnessCheck</a>
+    <ul class="nav-links">
+      <li><a href="/">🔬 Symptom Checker</a></li>
+      <li><a href="/blog">📰 Wellness Blog</a></li>
+      <li><a href="/admin" class="active">⚙️ Admin</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="admin-layout">
+
+  <!-- Left: Article list -->
+  <div>
+    <div class="card">
+      <div class="card-title">Articles (<span id="art-count">0</span>)</div>
+      <button class="new-btn" onclick="newArticle()">+ New Article</button>
+      <div class="art-list" id="art-list">
+        <div style="color:var(--muted);font-size:13px">Loading…</div>
+      </div>
+    </div>
+
+    <div class="hint-box">
+      <strong style="color:var(--text)">Adding articles via API</strong><br>
+      You can also POST directly:<br>
+      <code>POST /api/articles</code><br>
+      with a JSON body containing all required fields. No restart needed — changes appear immediately.
+    </div>
+  </div>
+
+  <!-- Right: Editor -->
+  <div class="card">
+    <div class="card-title" id="form-title">New Article</div>
+    <input type="hidden" id="edit-slug-orig">
+
+    <div class="form-grid">
+      <div class="field">
+        <label>Title *</label>
+        <input type="text" id="f-title" placeholder="Article title">
+      </div>
+      <div class="field">
+        <label>Slug * (URL-friendly)</label>
+        <input type="text" id="f-slug" placeholder="my-article-slug">
+      </div>
+      <div class="field">
+        <label>Category *</label>
+        <select id="f-category">
+          <option value="Symptoms">Symptoms</option>
+          <option value="Conditions">Conditions</option>
+          <option value="Prevention" selected>Prevention</option>
+          <option value="Dermatology">Dermatology</option>
+          <option value="Technology">Technology</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Date *</label>
+        <input type="date" id="f-date">
+      </div>
+      <div class="field">
+        <label>Author</label>
+        <input type="text" id="f-author" value="Wellness Desk">
+      </div>
+      <div class="field">
+        <label>Read time</label>
+        <input type="text" id="f-read-time" placeholder="5 min">
+      </div>
+      <div class="field">
+        <label>Emoji icon</label>
+        <input type="text" id="f-emoji" placeholder="❤️" maxlength="4">
+      </div>
+      <div class="field full">
+        <label>Summary * (shown on blog listing)</label>
+        <input type="text" id="f-summary" placeholder="One sentence that describes the article">
+      </div>
+      <div class="field full">
+        <label>Content * (HTML supported)</label>
+        <textarea class="content-area" id="f-content"
+          placeholder="<h2>Section heading</h2>&#10;<p>Your paragraph text here.</p>&#10;&#10;<h2>Another Section</h2>&#10;<ul>&#10;  <li><strong>Key point</strong> — explanation</li>&#10;</ul>"
+          oninput="updatePreview()"></textarea>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn-save" onclick="saveArticle()">Save Article</button>
+        <button class="btn-clear" onclick="newArticle()">Clear</button>
+      </div>
+      <div class="status" id="form-status"></div>
+    </div>
+
+    <!-- Live preview -->
+    <div class="preview-panel">
+      <div class="preview-title">Content preview</div>
+      <div class="preview-body" id="preview-body">
+        <span style="color:var(--muted)">Start typing content above to see a preview…</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<footer>
+  <a href="/">Symptom Checker</a> · <a href="/blog">Wellness Blog</a> · Admin Panel
+</footer>
+
+<script>
+let allArticles = [];
+let editingSlug = null;   // null = new article
+
+// Set today's date as default
+document.getElementById('f-date').value = new Date().toISOString().split('T')[0];
+
+// Auto-generate slug from title
+document.getElementById('f-title').addEventListener('input', function() {
+  if (!editingSlug) {  // only auto-generate for new articles
+    document.getElementById('f-slug').value = this.value
+      .toLowerCase().trim()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-');
+  }
+});
+
+async function loadArticles() {
+  try {
+    const res = await fetch('/api/articles');
+    allArticles = await res.json();
+    renderList();
+  } catch {
+    document.getElementById('art-list').innerHTML =
+      '<div style="color:var(--danger);font-size:13px">Cannot reach server</div>';
+  }
+}
+
+function renderList() {
+  document.getElementById('art-count').textContent = allArticles.length;
+  document.getElementById('art-list').innerHTML = allArticles.length
+    ? allArticles.map(a => `
+        <div class="art-item ${editingSlug===a.slug?'active':''}" onclick="editArticle('${a.slug}')">
+          <div class="art-item-emoji">${a.image_emoji}</div>
+          <div class="art-item-info">
+            <div class="art-item-title">${a.title}</div>
+            <div class="art-item-meta">${a.category} · ${a.date}</div>
+          </div>
+          <button class="art-item-del" title="Delete" onclick="deleteArticle(event,'${a.slug}','${a.title.replace(/'/g,"\\'")}')">✕</button>
+        </div>`).join('')
+    : '<div style="color:var(--muted);font-size:13px">No articles yet. Create the first one!</div>';
+}
+
+function newArticle() {
+  editingSlug = null;
+  document.getElementById('edit-slug-orig').value = '';
+  document.getElementById('form-title').textContent = 'New Article';
+  document.getElementById('f-title').value    = '';
+  document.getElementById('f-slug').value     = '';
+  document.getElementById('f-summary').value  = '';
+  document.getElementById('f-content').value  = '';
+  document.getElementById('f-emoji').value    = '';
+  document.getElementById('f-author').value   = 'Wellness Desk';
+  document.getElementById('f-read-time').value = '5 min';
+  document.getElementById('f-date').value     = new Date().toISOString().split('T')[0];
+  document.getElementById('f-category').value = 'Prevention';
+  document.getElementById('form-status').textContent = '';
+  document.getElementById('preview-body').innerHTML  =
+    '<span style="color:var(--muted)">Start typing content above to see a preview…</span>';
+  renderList();
+}
+
+async function editArticle(slug) {
+  try {
+    const res     = await fetch(`/api/articles/${slug}`);
+    const article = await res.json();
+    editingSlug   = slug;
+    document.getElementById('edit-slug-orig').value  = slug;
+    document.getElementById('form-title').textContent = 'Edit Article';
+    document.getElementById('f-title').value     = article.title;
+    document.getElementById('f-slug').value      = article.slug;
+    document.getElementById('f-summary').value   = article.summary;
+    document.getElementById('f-content').value   = (article.content||'').trim();
+    document.getElementById('f-emoji').value     = article.image_emoji;
+    document.getElementById('f-author').value    = article.author;
+    document.getElementById('f-read-time').value = article.read_time;
+    document.getElementById('f-date').value      = article.date;
+    document.getElementById('f-category').value  = article.category;
+    document.getElementById('form-status').textContent = '';
+    updatePreview();
+    renderList();
+  } catch {
+    setStatus('Could not load article.', 'err');
+  }
+}
+
+async function saveArticle() {
+  const body = {
+    slug:        document.getElementById('f-slug').value.trim(),
+    title:       document.getElementById('f-title').value.trim(),
+    category:    document.getElementById('f-category').value,
+    date:        document.getElementById('f-date').value,
+    author:      document.getElementById('f-author').value.trim() || 'Wellness Desk',
+    summary:     document.getElementById('f-summary').value.trim(),
+    read_time:   document.getElementById('f-read-time').value.trim() || '5 min',
+    image_emoji: document.getElementById('f-emoji').value.trim() || '📄',
+    content:     document.getElementById('f-content').value.trim(),
+  };
+
+  if (!body.title || !body.slug || !body.summary || !body.content) {
+    setStatus('Please fill in Title, Slug, Summary, and Content.', 'err');
+    return;
+  }
+
+  try {
+    let res;
+    if (editingSlug) {
+      // Update existing
+      res = await fetch(`/api/articles/${editingSlug}`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+    } else {
+      // Create new
+      res = await fetch('/api/articles', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+    }
+    const data = await res.json();
+    if (!res.ok) { setStatus(data.error || 'Save failed.', 'err'); return; }
+
+    setStatus(data.message || 'Saved!', 'ok');
+    editingSlug = body.slug;
+    await loadArticles();
+    renderList();
+  } catch {
+    setStatus('Cannot reach server.', 'err');
+  }
+}
+
+async function deleteArticle(e, slug, title) {
+  e.stopPropagation();
+  if (!confirm(`Delete "${title}"?\nThis cannot be undone.`)) return;
+  try {
+    const res  = await fetch(`/api/articles/${slug}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Delete failed.'); return; }
+    if (editingSlug === slug) newArticle();
+    await loadArticles();
+  } catch {
+    alert('Cannot reach server.');
+  }
+}
+
+function updatePreview() {
+  const content = document.getElementById('f-content').value;
+  document.getElementById('preview-body').innerHTML = content ||
+    '<span style="color:var(--muted)">Start typing content above to see a preview…</span>';
+}
+
+function setStatus(msg, type='') {
+  const el = document.getElementById('form-status');
+  el.textContent = msg;
+  el.className   = 'status ' + type;
+}
+
+loadArticles();
+</script>
+</body>
+</html>

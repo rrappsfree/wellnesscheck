@@ -1,0 +1,21 @@
+# DDXPlus dataset files (too large for GitHub — download manually)
+release_train_patients.zip
+release_validate_patients.zip
+release_test_patients.zip
+release_evidences.json
+release_conditions.json
+
+# Kaggle dataset (auto-downloaded by app)
+training.csv
+testing.csv
+
+# Runtime data files
+feedback_log.json
+unknown_symptoms.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
